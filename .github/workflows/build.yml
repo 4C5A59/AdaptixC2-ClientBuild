@@ -1,0 +1,91 @@
+name: Build AdaptixClient
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'Build type'
+        required: true
+        default: 'Release'
+        type: choice
+        options:
+        - Release
+        - Debug
+
+env:
+  QT_VERSION: '6.6.0'
+  CMAKE_VERSION: '3.28.0'
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Fix CMakeLists.txt for MSVC
+      working-directory: AdaptixClient
+      run: |
+        # Replace GCC-style linker flags with MSVC-style for Windows builds
+        (Get-Content CMakeLists.txt) -replace 'set\(CMAKE_EXE_LINKER_FLAGS "\$\{CMAKE_EXE_LINKER_FLAGS\} -Wl,-subsystem,windows"\)', '# GCC linker flag removed for MSVC compatibility' | Set-Content CMakeLists.txt
+      shell: powershell
+
+    - name: Install Qt
+      uses: jurplel/install-qt-action@v3
+      with:
+        version: ${{ env.QT_VERSION }}
+        arch: win64_msvc2019_64
+        cache: true
+        modules: 'qtwebsockets'
+
+    - name: Setup CMake
+      uses: jwlawson/actions-setup-cmake@v1.14
+      with:
+        cmake-version: ${{ env.CMAKE_VERSION }}
+
+    - name: Configure CMake
+      working-directory: AdaptixClient
+      run: |
+        cmake -B build -DCMAKE_BUILD_TYPE=${{ github.event.inputs.build_type }} -G "Visual Studio 17 2022" -A x64
+
+    - name: Build
+      working-directory: AdaptixClient
+      run: |
+        cmake --build build --config ${{ github.event.inputs.build_type }}
+
+    - name: Fix Windows Subsystem (Remove Console Window)
+      working-directory: AdaptixClient
+      run: |
+        # Use Developer Command Prompt to access editbin
+        $vsPath = "${env:ProgramFiles}\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+        $exePath = "build\${{ github.event.inputs.build_type }}\AdaptixClient.exe"
+        cmd /c "`"$vsPath`" && editbin /SUBSYSTEM:WINDOWS `"$exePath`""
+      shell: powershell
+
+    - name: Verify executable subsystem
+      working-directory: AdaptixClient
+      run: |
+        # Use Developer Command Prompt to access dumpbin
+        $vsPath = "${env:ProgramFiles}\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+        $exePath = "build\${{ github.event.inputs.build_type }}\AdaptixClient.exe"
+        cmd /c "`"$vsPath`" && dumpbin /headers `"$exePath`" | findstr subsystem"
+      shell: powershell
+
+    - name: Package Windows
+      working-directory: AdaptixClient
+      run: |
+        mkdir package
+        cp build/${{ github.event.inputs.build_type }}/AdaptixClient.exe package/
+        windeployqt package/AdaptixClient.exe --qmldir . --compiler-runtime
+
+        # Create zip archive
+        Compress-Archive -Path package/* -DestinationPath AdaptixClient-Windows-x64-${{ github.event.inputs.build_type }}.zip
+
+    - name: Upload Windows Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: AdaptixClient-Windows-x64-${{ github.event.inputs.build_type }}
+        path: |
+          AdaptixClient/package/
+          AdaptixClient/AdaptixClient-Windows-x64-${{ github.event.inputs.build_type }}.zip
